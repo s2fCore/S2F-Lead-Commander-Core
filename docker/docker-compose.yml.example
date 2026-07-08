@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: b2b_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: [YOUR_DATABASE_USERNAME]
+      POSTGRES_PASSWORD: [YOUR_DATABASE_PASSWORD]
+      POSTGRES_DB: [YOUR_DATABASE_NAME]
+    volumes:
+      - /opt/b2b-agent/postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  browserless:
+    image: ghcr.io/browserless/chromium:latest
+    container_name: b2b_browser
+    restart: always
+    shm_size: '2gb'                # Prevents memory crashes on heavy website DOM parses
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - MAX_CONCURRENT_SESSIONS=5
+      - DEMO_MODE=false
+      - EXIT_ON_HEALTH_FAILURE=true
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: b2b_ai_brain
+    restart: always
+    ports:
+      - "0.0.0.0:11434:11434"
+    volumes:
+      - /opt/b2b-agent/ollama_models:/root/.ollama
+
+  mailserver:
+    image: analogic/poste.io:latest
+    container_name: b2b_mail_server
+    restart: always
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:2525:25"    # Server-to-server inbound port mapping
+      - "127.0.0.1:5877:587"   # Secure Auth Submission Port remapped to 5877
+      - "127.0.0.1:1025:1025"  # Sandbox staging alignment port
+      - "0.0.0.0:8080:80"      # Admin Dashboard access mapping
+    volumes:
+      - /opt/b2b-agent/mail_data:/data
+    environment:
+      - TZ=UTC
+      - HTTPS=OFF

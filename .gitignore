@@ -1,0 +1,52 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# THREADHUNTER CORE: GIT EXCLUSION MATRIX
+# ──────────────────────────────────────────────────────────────────────────────
+
+# 1. Local Credentials & Keys (CRITICAL SECURITY)
+.env
+scripts/.env
+s2f_env_config.py.bak
+*.pem
+*.key
+
+# 2. Virtual Environments & Local Dependencies
+venv/
+.venv/
+env/
+ENV/
+bin/
+lib/
+lib64/
+share/
+include/
+
+# 3. Persistent Docker Container Data
+postgres_data/
+ollama_models/
+
+# 4. Cache & Temporary Runtime Files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+/tmp/s2f_orchestrator.lock
+
+# 5. Local Execution Logs, Data, & Mailbox Storage
+mail_data/
+scripts/email_pipeline_state.json
+scripts/.system_journey.json
+
+# 6. Legacy Local Backups
+Old/
+o-l-d/
+
+# 7. Local Cache & Scraped State Logs
+scripts/scraped_cache_state.json
+
+# 8. Local Active Production Files (Keep Private)
+docker/docker-compose.yml
+scripts/s2f_env_config.py
+scripts/bulk_sender.py
+scripts/incoming_reply_handler.py

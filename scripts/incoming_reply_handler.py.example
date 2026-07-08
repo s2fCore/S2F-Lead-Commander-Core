@@ -1,0 +1,176 @@
+import os
+import sys
+import shutil
+import re
+import psycopg2
+import time
+from email import message_from_file
+
+# Bind environment configurations
+sys.path.append("/opt/b2b-agent/scripts")
+from s2f_env_config import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, GLOBAL_LOG_PATH
+
+DOMAINS_BASE_DIR = "/opt/b2b-agent/mail_data/domains"
+
+def write_raw_log(message):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"[{timestamp}] [INBOX_HANDLER] {message}\n"
+    print(message)
+    try:
+        os.makedirs(os.path.dirname(GLOBAL_LOG_PATH), exist_ok=True)
+        with open(GLOBAL_LOG_PATH, "a") as f:
+            f.write(log_entry)
+    except Exception as e:
+        print(f"[-] Failed to write to log file: {e}")
+
+def harvest_active_maildirs(base_dir=DOMAINS_BASE_DIR):
+    """Recursively scans the mail root to discover all active user Maildirs dynamically."""
+    discovered = []
+    if not os.path.exists(base_dir):
+        return discovered
+    for root, dirs, files in os.walk(base_dir):
+        if root.endswith("/Maildir/new") or root.endswith("\\Maildir\\new"):
+            cur_dir = root.replace("/new", "/cur").replace("\\new", "\\cur")
+            discovered.append((root, cur_dir))
+    return discovered
+
+def parse_email_message(file_path):
+    """Parses raw mail file to extract the sender, subject, and clean body text."""
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            msg = message_from_file(f)
+            
+            from_header = msg.get("From", "")
+            match = re.search(r'<([^>]+)>', from_header)
+            sender = match.group(1).lower().strip() if match else from_header.lower().strip()
+            
+            subject = msg.get("Subject", "")
+            
+            body = ""
+            if msg.is_multipart():
+                for part in msg.walk():
+                    if part.get_content_type() == "text/plain":
+                        body += part.get_payload(decode=True).decode("utf-8", errors="ignore")
+            else:
+                body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+                
+            return sender, subject, body
+    except Exception as e:
+        print(f"[-] Email file parse failed for {file_path}: {e}")
+    return None, "", ""
+
+def check_for_replies():
+    # 1. Harvest all active mailboxes dynamically
+    maildirs = harvest_active_maildirs()
+    if not maildirs:
+        return
+
+    try:
+        conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, database=DB_NAME, user=DB_USER, password=DB_PASSWORD)
+        cursor = conn.cursor()
+    except Exception as e:
+        print(f"[-] PostgreSQL connection error: {e}")
+        return
+
+    # 2. Loop through each discovered mailbox
+    for new_dir, cur_dir in maildirs:
+        if not os.path.exists(new_dir):
+            continue
+            
+        # Get the files inside the CURRENT mailbox we are scanning
+        files = [os.path.join(new_dir, f) for f in os.listdir(new_dir)]
+        
+        for file_path in files:
+            sender, subject, body = parse_email_message(file_path)
+            if not sender:
+                continue
+
+            body_lower = body.lower().strip()
+
+            # 1. Check if the incoming mail is an automated Mailer-Daemon Bounce back
+            is_bounce = any(k in sender for k in ["mailer-daemon", "postmaster", "null"]) or \
+                        any(k in subject.lower() for k in ["failure", "undelivered", "returned mail", "returned to sender"])
+
+            if is_bounce:
+                # Extract any email addresses mentioned in the bounce log body
+                extracted_emails = list(set(re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', body)))
+                matched_bounce_email = None
+
+                # Cross-reference the extracted emails with leads we recently pitched
+                for b_email in extracted_emails:
+                    cursor.execute("SELECT id FROM sportswear_leads WHERE personal_email = %s AND delivery_status = 'Sent';", (b_email,))
+                    lead = cursor.fetchone()
+                    if lead:
+                        matched_bounce_email = b_email
+                        lead_id = lead[0]
+
+                        # Update lead status to Bounced
+                        cursor.execute("""
+                            UPDATE sportswear_leads
+                            SET delivery_status = 'Bounced',
+                                scan_status = 'Bounced'
+                            WHERE id = %s;
+                        """, (lead_id,))
+                        conn.commit()
+                        write_raw_log(f"    🛡️ [BOUNCE] Rejection notice parsed for: {b_email} (Lead ID {lead_id} marked 'Bounced')")
+                        break
+
+                if not matched_bounce_email:
+                    write_raw_log(f"    [⚠️] Received unmapped automated delivery alert from: {sender}")
+
+            # 2. Process as a standard direct reply / keyword control
+            else:
+                cursor.execute("SELECT id, name FROM sportswear_leads WHERE personal_email = %s;", (sender,))
+                lead = cursor.fetchone()
+
+                if lead:
+                    lead_id, lead_name = lead[0], lead[1]
+                    
+                    # Check for explicit user control opt-out/opt-in keywords
+                    if "unsubscribe" in body_lower or "remove" in body_lower or "stop" in body_lower:
+                        # Privacy Opt-out: Set to Skipped_NonTarget / Unsubscribed
+                        cursor.execute("""
+                            UPDATE sportswear_leads
+                            SET scan_status = 'Skipped_NonTarget',
+                                delivery_status = 'Unsubscribed'
+                            WHERE id = %s;
+                        """, (lead_id,))
+                        conn.commit()
+                        write_raw_log(f"    🚫 [UNSUBSCRIBE] Lead '{lead_name}' (ID {lead_id}) matched opt-out keyword. Permanently removed.")
+
+                    elif "later" in body_lower or "hold" in body_lower:
+                        # Season Hold: Set to Social_Hold / Success/Hold
+                        cursor.execute("""
+                            UPDATE sportswear_leads
+                            SET scan_status = 'Social_Hold',
+                                delivery_status = 'Success/Hold'
+                            WHERE id = %s;
+                        """, (lead_id,))
+                        conn.commit()
+                        write_raw_log(f"    ⏸️ [SEASON HOLD] Lead '{lead_name}' (ID {lead_id}) requested contact later. Moved to Social_Hold.")
+
+                    else:
+                        # Standard Reply or "INTERESTED" response
+                        cursor.execute("""
+                            UPDATE sportswear_leads
+                            SET scan_status = 'Replied',
+                                delivery_status = 'Success/Reply'
+                            WHERE id = %s;
+                        """, (lead_id,))
+                        conn.commit()
+                        write_raw_log(f"    ✔ Lead '{lead_name}' (ID {lead_id}) updated to 'Replied' (Active engagement registered).")
+                else:
+                    write_raw_log(f"    [+] Received alternate inbound mail from: {sender}")
+
+            # Move the mail file to cur/ to mark as read and prevent double-processing
+            try:
+                os.makedirs(cur_dir, exist_ok=True)
+                shutil.move(file_path, os.path.join(cur_dir, os.path.basename(file_path)))
+            except Exception as e:
+                print(f"[-] Failed to move processed email: {e}")
+
+    cursor.close()
+    conn.close()
+
+if __name__ == "__main__":
+    check_for_replies()

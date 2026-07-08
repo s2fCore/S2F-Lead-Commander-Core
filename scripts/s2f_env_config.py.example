@@ -1,0 +1,65 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# S2F B2B PIPELINE ENGINE: CENTRALIZED ENVIRONMENT CONFIGURATION TEMPLATE
+# ──────────────────────────────────────────────────────────────────────────────
+import os
+
+# 1. DATABASE CONFIGURATION (PostgreSQL)
+DB_HOST     = "127.0.0.1"
+DB_PORT     = "5432"
+DB_NAME     = "[YOUR_DB_NAME]"
+DB_USER     = "[YOUR_DB_USER]"
+DB_PASSWORD = "[YOUR_DB_PASSWORD]"
+
+# 2. LOCAL INFERENCE ENGINE CONFIGURATION (Ollama AI API)
+AI_API_URL  = "http://127.0.0.1:11434"
+AI_MODEL    = "qwen2.5:7b"
+
+# 3. BROWSER CDP ACCESS
+BROWSER_CDP_URL = "ws://127.0.0.1:3000"
+
+# 4. OUTBOUND SMTP ROUTATION MATRIX
+# TIER 1 OUTBOUND: RESEND (Primary Low Volume Invariant)
+RESEND_SMTP_HOST = "smtp.resend.com"
+RESEND_SMTP_PORT = 587
+RESEND_API_KEY   = "[YOUR_RESEND_API_KEY]"
+RESEND_SENDER    = "[YOUR_RESEND_SENDER_EMAIL]"
+REPLY_TO_EMAIL   = os.getenv("REPLY_TO_EMAIL", "info@yourdomain.com")
+
+# TIER 2 OUTBOUND: BREVO / SENDINBLUE (Backup High Volume Scale Block)
+BREVO_SMTP_HOST  = "smtp-relay.brevo.com"
+BREVO_SMTP_PORT  = 587
+BREVO_API_KEY    = "[YOUR_BREVO_API_KEY]"
+BREVO_SMTP_USER  = "[YOUR_BREVO_SMTP_USER]"
+BREVO_SENDER     = "[YOUR_BREVO_SENDER_EMAIL]"
+
+# TIER 3 OUTBOUND: MAILGUN (Newly Activated Heavy Bulk Campaign Block)
+MAILGUN_SMTP_HOST = "smtp.mailgun.org"
+MAILGUN_SMTP_PORT = 587
+MAILGUN_SMTP_USER = "[YOUR_MAILGUN_SMTP_USER]"
+MAILGUN_API_KEY   = "[YOUR_MAILGUN_API_KEY]"
+MAILGUN_SENDER    = "[YOUR_MAILGUN_SENDER_EMAIL]"
+
+# 5. ABSOLUTE PATHWAYS MATRIX
+BASE_INSTALL_DIR = "/opt/b2b-agent"
+SCRIPTS_DIR      = os.path.join(BASE_INSTALL_DIR, "scripts")
+ENGINES_DIR      = os.path.join(BASE_INSTALL_DIR, "engines")
+LOGS_DIR         = os.path.join(BASE_INSTALL_DIR, "mail_data")
+
+# Absolute paths for scripts to be executed
+SCRIPT_ORCHESTRATOR     = os.path.join(SCRIPTS_DIR, "main_orchestrator.py")
+SCRIPT_WEB_HUNTER       = os.path.join(ENGINES_DIR, "engine_web.py")
+SCRIPT_AI_REASONER      = os.path.join(SCRIPTS_DIR, "ai_reasoner.py")
+SCRIPT_DISCORD_DISPATCH = os.path.join(SCRIPTS_DIR, "discord_dispatcher.py")
+SCRIPT_MAPS_HARVESTER   = os.path.join(ENGINES_DIR, "s2f_maps_harvester.py")
+SCRIPT_BULK_SENDER      = os.path.join(SCRIPTS_DIR, "bulk_sender.py")
+
+# Logging and State Pathways
+STATE_FILE_PATH     = os.path.join(SCRIPTS_DIR, "email_pipeline_state.json")
+GLOBAL_LOG_PATH      = os.path.join(LOGS_DIR, "scraper_execution.log")
+SYSTEM_JOURNEY_PATH = os.path.join(SCRIPTS_DIR, ".system_journey.json")
+
+# 6. TELEMETRY SHARDED DISCORD ROUTING
+DISCORD_TOKEN   = "[YOUR_DISCORD_BOT_TOKEN]"
+CHANNEL_ALPHA   = "[YOUR_ALPHA_DISCORD_CHANNEL_ID]"
+CHANNEL_ALPHA_1 = "[YOUR_ALPHA_1_DISCORD_CHANNEL_ID]"
+CHANNEL_BETA    = "[YOUR_BETA_DISCORD_CHANNEL_ID]"

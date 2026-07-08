@@ -1,0 +1,205 @@
+import os
+import sys
+import time
+import smtplib
+import socket
+import requests
+from email.mime.text import MIMEText
+from email.header import Header
+import psycopg2
+
+# Bind environment configurations
+sys.path.append("/opt/b2b-agent/scripts")
+from s2f_env_config import (
+    DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
+    RESEND_SMTP_HOST, RESEND_SMTP_PORT, RESEND_API_KEY, RESEND_SENDER,
+    BREVO_SMTP_HOST, BREVO_SMTP_PORT, BREVO_API_KEY, BREVO_SMTP_USER, BREVO_SENDER,
+    MAILGUN_SMTP_HOST, MAILGUN_SMTP_PORT, MAILGUN_SMTP_USER, MAILGUN_API_KEY, MAILGUN_SENDER,
+    GLOBAL_LOG_PATH
+)
+
+def write_raw_log(message):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"[{timestamp}] [SENDER] {message}\n"
+    print(message)
+    try:
+        os.makedirs(os.path.dirname(GLOBAL_LOG_PATH), exist_ok=True)
+        with open(GLOBAL_LOG_PATH, "a") as f:
+            f.write(log_entry)
+    except Exception as e:
+         print(f"[-] Failed to write to log file: {e}")
+
+def get_recipient_timezone_offset(email, phone):
+    """
+    Returns the estimated timezone offset (hours from UTC) based on TLD or Phone prefix.
+    Defaulting to +1 (Central Europe average) if unable to identify.
+    """
+    email_lower = email.lower() if email else ""
+    phone_clean = "".join(filter(str.isdigit, phone or ""))
+    
+    # 1. Check United Kingdom (GMT/BST -> UTC+0 / UTC+1)
+    if email_lower.endswith(".uk") or phone_clean.startswith("44"):
+        return 0
+    # 2. Check US / Canada (EST/PST average -> UTC-5)
+    if email_lower.endswith((".us", ".ca")) or phone_clean.startswith("1"):
+        return -5
+    # 3. Check Western/Central Europe (CEST -> UTC+2)
+    if email_lower.endswith((".ch", ".nl", ".de", ".fr", ".it", ".se", ".dk", ".be")) or phone_clean.startswith(("41", "31", "49", "33", "39", "46", "45", "32")):
+        return 2
+    # 4. Check Australia / Brazil / alternate TLDs
+    if email_lower.endswith(".au") or phone_clean.startswith("61"):
+        return 10
+    if email_lower.endswith(".br") or phone_clean.startswith("55"):
+        return -3
+
+    # Default to Western Europe Average (UTC+1)
+    return 1
+
+def is_recipient_active_hours(email, phone):
+    """Determines if the recipient's local time is currently between 09:00 and 17:00."""
+    offset = get_recipient_timezone_offset(email, phone)
+    current_utc_hour = time.gmtime().tm_hour
+    recipient_hour = (current_utc_hour + offset) % 24
+    
+    # Return True if recipient local hour is between 9 AM and 5 PM
+    active = 9 <= recipient_hour < 17
+    return active, recipient_hour
+
+def verify_dns_mx_records(email):
+    """Queries DNS directly to verify the domain has valid mail exchangers, preventing hard bounces."""
+    domain = email.split("@")[-1]
+    try:
+        # Standard system socket check for MX servers
+        socket.getaddrinfo(domain, 25, socket.AF_INET, socket.SOCK_STREAM)
+        return True
+    except socket.gaierror:
+        return False
+
+def compile_seo_sales_email(company_name, hook):
+    """Formulates a clean, human-like sales email that includes S2F sportswear introductions."""
+    subject = f"Sublimated uniforms and custom sportswear for {company_name}"
+    
+    body = (
+        f"{hook}\n\n"
+        f"We are custom athletic wear and sportswear manufacturers specializing in fully sublimated uniforms, "
+        f"premium rashguards, fightwear, and custom gym apparel. All our production takes place in our dedicated facility "
+        f"to guarantee the highest level of craftsmanship and pricing control.\n\n"
+        f"We'd love to discuss making custom uniforms, sublimated rashguards, or private-label gear for your athletes. "
+        f"To keep this convenient, please let us know your requirements simply by replying directly to this email.\n\n"
+        f"If you prefer to browse our visual designs and portfolio first, feel free to check out our Instagram over at @s2fsportswear.\n\n"
+        f"Best regards,\n"
+        f"Outbound Outreach Team\n"
+        f"S2F Sportswear\n\n"
+        f"--------------------------------------------------\n"
+        f"To help us respect your inbox, please reply directly with one of these keywords:\n"
+        f"- Reply \"INTERESTED\" to request custom product samples.\n"
+        f"- Reply \"LATER\" to place this conversation on hold for a future season.\n"
+        f"- Reply \"UNSUBSCRIBE\" to be permanently removed from our outreach lists."
+    )
+    return subject, body
+
+def send_smtp_via_tier(tier, to_email, subject, body_text):
+    """Performs the SMTP transmission using the specified outbound tier."""
+    msg = MIMEText(body_text, 'plain', 'utf-8')
+    msg['Subject'] = Header(subject, 'utf-8')
+    msg['Reply-To'] = "info@ahmed.com.pk" # Force all replies to route to your primary inbox
+    
+    try:
+        if tier == 1: # RESEND
+            msg['From'] = f"S2F Sportswear <{RESEND_SENDER}>"
+            msg['To'] = to_email
+            res = requests.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+                json={"from": RESEND_SENDER, "to": [to_email], "subject": subject, "text": body_text, "reply_to": "info@ahmed.com.pk"},
+                timeout=15
+            )
+            return res.status_code == 200 or res.status_code == 201
+
+        elif tier == 2: # BREVO
+            msg['From'] = f"S2F Sportswear <{BREVO_SENDER}>"
+            msg['To'] = to_email
+            server = smtplib.SMTP(BREVO_SMTP_HOST, BREVO_SMTP_PORT, timeout=15)
+            server.starttls()
+            server.login(BREVO_SMTP_USER, BREVO_API_KEY)
+            server.sendmail(BREVO_SENDER, [to_email], msg.as_string())
+            server.quit()
+            return True
+
+        elif tier == 3: # MAILGUN
+            msg['From'] = f"S2F Sportswear <{MAILGUN_SENDER}>"
+            msg['To'] = to_email
+            server = smtplib.SMTP(MAILGUN_SMTP_HOST, MAILGUN_SMTP_PORT, timeout=15)
+            server.starttls()
+            server.login(MAILGUN_SMTP_USER, MAILGUN_API_KEY)
+            server.sendmail(MAILGUN_SENDER, [to_email], msg.as_string())
+            server.quit()
+            return True
+
+    except Exception as e:
+        write_raw_log(f"    [-] SMTP Tier {tier} connection failed: {e}")
+        return False
+
+def execute_campaign_cycle():
+    write_raw_log("=== INITIALIZING STATELESS SENDER CAMPAIGN MODULE ===")
+    
+    try:
+        conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, database=DB_NAME, user=DB_USER, password=DB_PASSWORD)
+        cursor = conn.cursor()
+    except Exception as e:
+        write_raw_log(f"[-] PostgreSQL connection error: {str(e)}")
+        return
+
+    # Select leads waiting inside the Email Queue
+    cursor.execute("""
+        SELECT id, name, personal_email, phone_number, targeted_hook, email_stage
+        FROM sportswear_leads
+        WHERE scan_status = 'Email_Queue' AND delivery_status = 'Not Sent'
+        ORDER BY last_delivery_attempt ASC NULLS FIRST, id DESC
+        LIMIT 30;
+    """)
+    queue = cursor.fetchall()
+    write_raw_log(f"[SENDER] Sourced {len(queue)} pending emails from queue.")
+
+    # Cycle-level SMTP rotation variables
+    smtp_tier_cycle = [1, 2, 3]
+
+    for lead_id, name, email, phone, hook, stage in queue:
+        # Check active hour requirements
+        is_active, recipient_hour = is_recipient_active_hours(email, phone)
+        if not is_active:
+            write_raw_log(f"    ➔ Skipping '{name}' (Local hour is {recipient_hour}:00, timezone-safe hold active)")
+            continue
+
+        # Check domain MX records
+        if not verify_dns_mx_records(email):
+            write_raw_log(f"    🛡️ [BOUNCE_GUARD] Skipped target '{name}' due to dead MX records (Saved from Hard Bounce)")
+            cursor.execute("UPDATE sportswear_leads SET delivery_status = 'Invalid_MX' WHERE id = %s;", (lead_id,))
+            conn.commit()
+            continue
+
+        subject, body = compile_seo_sales_email(name, hook)
+        
+        # Pick and rotate SMTP tier
+        tier = smtp_tier_cycle[lead_id % len(smtp_tier_cycle)]
+        write_raw_log(f"    ➔ Dispatching email to '{email}' via SMTP Tier {tier}...")
+        
+        success = send_smtp_via_tier(tier, email, subject, body)
+        
+        if success:
+            cursor.execute("""
+                UPDATE sportswear_leads 
+                SET delivery_status = 'Sent',
+                    last_delivery_attempt = NOW()
+                WHERE id = %s;
+            """, (lead_id,))
+            conn.commit()
+            write_raw_log(f"    ✔ Successfully dispatched email to '{email}'")
+        else:
+            write_raw_log(f"    [-] Failed sending to '{email}'. Retrying in next cycle.")
+
+    cursor.close()
+    conn.close()
+
+if __name__ == "__main__":
+    execute_campaign_cycle()
